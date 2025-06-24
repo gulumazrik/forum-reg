@@ -1,0 +1,351 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Форум с регистрацией и файлами</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+        .form-container, .auth-container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+        input, textarea {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #28a745;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #218838;
+        }
+        .delete-btn {
+            background-color: #dc3545;
+        }
+        .delete-btn:hover {
+            background-color: #c82333;
+        }
+        .post {
+            background-color: white;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        .post h3 {
+            margin: 0 0 10px;
+            color: #333;
+        }
+        .post p {
+            margin: 0 0 10px;
+        }
+        .post small {
+            color: #777;
+        }
+        .auth-status {
+            margin-bottom: 20px;
+            text-align: right;
+        }
+        .file-list a {
+            display: block;
+            color: #007bff;
+            text-decoration: none;
+            margin: 5px 0;
+        }
+        .file-list a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <h1>Форум с регистрацией</h1>
+    <div class="auth-status">
+        <span id="user-status">Вы не авторизованы</span>
+        <button id="logout-btn" style="display: none;" onclick="logout()">Выйти</button>
+    </div>
+    <div class="auth-container" id="auth-container">
+        <h2>Авторизация / Регистрация</h2>
+        <input type="text" id="username" placeholder="Логин" maxlength="50" required>
+        <input type="password" id="password" placeholder="Пароль" maxlength="50" required>
+        <button onclick="register()">Зарегистрироваться</button>
+        <button onclick="login()">Войти</button>
+    </div>
+    <div class="form-container" id="post-form" style="display: none;">
+        <input type="text" id="title" placeholder="Заголовок темы" maxlength="100" required>
+        <textarea id="content" placeholder="Текст темы" rows="5" maxlength="1000" required></textarea>
+        <input type="file" id="file-input" multiple accept=".txt,.pdf,.jpg,.jpeg,.png,.gif">
+        <small>Макс. размер файла: 5 МБ. Поддерживаемые форматы: txt, pdf, jpg, jpeg, png, gif</small>
+        <button onclick="createPost()">Создать тему</button>
+    </div>
+    <div id="posts"></div>
+
+    <script>
+        const ADMIN_LOGIN = 'gulumazr';
+        const ADMIN_PASSWORD = 'egor0613';
+        let currentUser = null;
+        const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
+        const ALLOWED_FILE_TYPES = ['text/plain', 'application/pdf', 'image/jpeg', 'image/png', 'image/gif'];
+
+        // Загрузка постов и проверка авторизации при загрузке страницы
+        document.addEventListener('DOMContentLoaded', () => {
+            loadPosts();
+            checkAuth();
+        });
+
+        function register() {
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value.trim();
+
+            if (!username || !password) {
+                alert('Пожалуйста, заполните логин и пароль.');
+                return;
+            }
+
+            let users = JSON.parse(localStorage.getItem('users')) || [];
+            if (users.find(user => user.username === username)) {
+                alert('Пользователь с таким логином уже существует.');
+                return;
+            }
+
+            users.push({ username, password });
+            localStorage.setItem('users', JSON.stringify(users));
+            alert('Регистрация успешна! Теперь вы можете войти.');
+            document.getElementById('username').value = '';
+            document.getElementById('password').value = '';
+        }
+
+        function login() {
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value.trim();
+
+            if (!username || !password) {
+                alert('Пожалуйста, заполните логин и пароль.');
+                return;
+            }
+
+            if (username === ADMIN_LOGIN && password === ADMIN_PASSWORD) {
+                currentUser = { username: 'admin', isAdmin: true };
+                localStorage.setItem('currentUser', JSON.stringify(currentUser));
+                updateUI();
+                return;
+            }
+
+            const users = JSON.parse(localStorage.getItem('users')) || [];
+            const user = users.find(user => user.username === username && user.password === password);
+
+            if (!user) {
+                alert('Неверный логин или пароль.');
+                return;
+            }
+
+            currentUser = { username, isAdmin: false document;
+            localStorage.setItem('currentUser', JSON.stringify(currentUser));
+            updateUI();
+        }
+
+        function logout() {
+            currentUser = null;
+            localStorage.removeItem('currentUser');
+            updateUI();
+        }
+
+        function checkAuth() {
+            const userData = JSON.parse(localStorage.getItem('currentUser'));
+            if (userData) {
+                currentUser = userData;
+            }
+            updateUI();
+        }
+
+        function updateUI() {
+            const authContainer = document.getElementById('auth-container');
+            const postForm = document.getElementById('post-form');
+            const userStatus = document.getElementById('user-status');
+            const logoutBtn = document.getElementById('logout-btn');
+
+            if (currentUser) {
+                authContainer.style.display = 'none';
+                postForm.style.display = 'block';
+                userStatus.textContent = `Вы вошли как: ${currentUser.username}${currentUser.isAdmin ? ' (Админ)' : ''}`;
+                logoutBtn.style.display = 'inline-block';
+            } else {
+                authContainer.style.display = 'block';
+                postForm.style.display = 'none';
+                userStatus.textContent = 'Вы не авторизованы';
+                logoutBtn.style.display = 'none';
+            }
+            loadPosts();
+        }
+
+        async function createPost() {
+            if (!currentUser) {
+                alert('Пожалуйста, войдите, чтобы создать тему.');
+                return;
+            }
+
+            const title = document.getElementById('title').value.trim();
+            const content = document.getElementById('content').value.trim();
+            const fileInput = document.getElementById('file-input');
+            const date = new Date().toLocaleString('ru-RU');
+
+            if (!title || !content) {
+                alert('Пожалуйста, заполните заголовок и текст темы.');
+                return;
+            }
+
+            const files = fileInput.files;
+            const fileData = [];
+            for (let file of files) {
+                if (file.size > MAX_FILE_SIZE) {
+                    alert(`Файл ${file.name} превышает максимальный размер (5 МБ).`);
+                    return;
+                }
+                if (!ALLOWED_FILE_TYPES.includes(file.type)) {
+                    alert(`Файл ${file.name} имеет неподдерживаемый формат.`);
+                    return;
+                }
+                const base64 = await readFileAsBase64(file);
+                fileData.push({
+                    name: sanitizeHTML(file.name),
+                    type: file.type,
+                    data: base64
+                });
+            }
+
+            const post = {
+                id: Date.now(),
+                author: currentUser.username,
+                title,
+                content,
+                date,
+                files: fileData
+            };
+
+            let posts = JSON.parse(localStorage.getItem('posts')) || [];
+            posts.push(post);
+            localStorage.setItem('posts', JSON.stringify(posts));
+
+            document.getElementById('title').value = '';
+            document.getElementById('content').value = '';
+            fileInput.value = '';
+            loadPosts();
+        }
+
+        function deletePost(postId) {
+            if (!currentUser || !currentUser.isAdmin) {
+                alert('Только администратор может удалять посты.');
+                return;
+            }
+
+            let posts = JSON.parse(localStorage.getItem('posts')) || [];
+            posts = posts.filter(post => post.id !== postId);
+            localStorage.setItem('posts', JSON.stringify(posts));
+            loadPosts();
+        }
+
+        function loadPosts() {
+            const postsContainer = document.getElementById('posts');
+            postsContainer.innerHTML = '';
+            const posts = JSON.parse(localStorage.getItem('posts')) || [];
+
+            posts.reverse().forEach(post => {
+                const postElement = document.createElement('div');
+                postElement.className = 'post';
+                let filesHTML = '';
+                if (post.files && post.files.length > 0) {
+                    filesHTML = '<div class="file-list">';
+                    post.files.forEach((file, index) => {
+                        filesHTML += `<a href="${file.data}" download="${file.name}">${file.name}</a>`;
+                    });
+                    filesHTML += '</div>';
+                }
+                postElement.innerHTML = `
+                    <h3>${sanitizeHTML(post.title)}</h3>
+                    <p>${sanitizeHTML(post.content)}</p>
+                    ${filesHTML}
+                    <small>Автор: ${sanitizeHTML(post.author)} | ${post.date}</small>
+                    ${currentUser && currentUser.isAdmin ? `<button class="delete-btn" onclick="deletePost(${post.id})">Удалить</button>` : ''}
+                `;
+                postsContainer.appendChild(postElement);
+            });
+        }
+
+        function readFileAsBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
+        function sanitizeHTML(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
